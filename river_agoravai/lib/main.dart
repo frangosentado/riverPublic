@@ -26,7 +26,6 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const storage = FlutterSecureStorage();
-
     return MaterialApp(
       title: 'RIVER MVP',
       theme: ThemeData(
@@ -50,7 +49,12 @@ class MVP extends StatefulWidget {
   final String cid;
   final String secret;
 
-  const MVP({super.key, required this.title, this.storage, required this.cid, required this.secret});
+  const MVP(
+      {super.key,
+      required this.title,
+      this.storage,
+      required this.cid,
+      required this.secret});
 
   @override
   State<MVP> createState() => _MVPState();
@@ -62,6 +66,7 @@ class _MVPState extends State<MVP> {
   final TextEditingController nameController = TextEditingController();
   var link = "";
   var _loading = false;
+  List<Map<dynamic, dynamic>> userPlaylists = [];
 
   late int playlists = 1;
 
@@ -79,14 +84,55 @@ class _MVPState extends State<MVP> {
     });
   }
 
+  void userAuth() async {
+    const String redirectUri = 'river://spotify-auth-callback';
+
+    String spotifyAuthUrl =
+        'https://accounts.spotify.com/authorize?response_type=code&client_id=${widget.cid}&scope=playlist-modify-private&redirect_uri=$redirectUri';
+
+    try {
+      final result = await FlutterWebAuth.authenticate(
+        url: spotifyAuthUrl,
+        callbackUrlScheme: 'river',
+      );
+
+      // Check for and extract the authorization code from the result.
+      final code = result.split("code=")[1];
+      debugPrint(code);
+
+      final tokens = await requestSpotifyTokens(code, redirectUri);
+      if (tokens != null) {
+        final accessToken = tokens['access_token'];
+        final refreshToken = tokens['refresh_token'];
+        await widget.storage!.write(key: "spAccessToken", value: accessToken);
+        await widget.storage!.write(key: "spRefreshToken", value: refreshToken);
+
+        const String userInfoEndpoint = 'https://api.spotify.com/v1/me';
+
+        final response = await http.get(
+          Uri.parse(userInfoEndpoint),
+          headers: {
+            'Authorization': 'Bearer $accessToken',
+          },
+        );
+        debugPrint(response.body);
+        final parsedResponse = jsonDecode(response.body);
+        final userID = parsedResponse["id"] ?? "null";
+        widget.storage!.write(key: "userID", value: userID);
+
+        debugPrint(userID + tokens.toString());
+      }
+    } catch (e) {
+      debugPrint('Authentication error: $e');
+    }
+  }
+
   Future<Map<String, dynamic>?> requestSpotifyTokens(
       String authorizationCode, String redirectUri) async {
-
     const tokenUrl = 'https://accounts.spotify.com/api/token';
-    
+
     debugPrint(
-      base64Encode(utf8.encode('${widget.cid}:${widget.secret}')).toString()
-    );
+        base64Encode(utf8.encode('${widget.cid}:${widget.secret}')).toString());
 
     final response = await http.post(
       Uri.parse(tokenUrl),
@@ -114,31 +160,31 @@ class _MVPState extends State<MVP> {
   }
 
   Future<void> _getPls() async {
-    late String userID;
-    var accessToken = "";
+    final userID = await widget.storage!.read(key: "userID");
+    final accessToken = await widget.storage!.read(key: "spAccessToken");
 
     const String playlistEndpoint =
-            'https://api.spotify.com/v1/users/{user_id}/playlists';
-
-    final bool hasAccessToken = await widget.storage!.containsKey(key: "accessToken");
-
-
-
-    final bool isLoggedIn = await widget.storage!.containsKey(key: "userID");
-
-    if (isLoggedIn) {
-      userID = await widget.storage!.read(key: "userID") ?? "";
-    }
+        'https://api.spotify.com/v1/users/{user_id}/playlists';
 
     final postPlaylistResponse = await http.get(
-          Uri.parse(playlistEndpoint.replaceFirst(
-              '{user_id}', '$userID')), // Replace with the user's Spotify ID
-          headers: {
-            'Authorization': 'Bearer $accessToken',
-            'Content-Type': 'application/json',
-          },
-        );
+      Uri.parse(
+          "${playlistEndpoint.replaceFirst('{user_id}', '$userID')}?limit=5"), // Replace with the user's Spotify ID
+      headers: {
+        'Authorization': 'Bearer $accessToken',
+        'Content-Type': 'application/json',
+      },
+    );
 
+    debugPrint(postPlaylistResponse.body.toString());
+
+    final parsedResponse = jsonDecode(postPlaylistResponse.body);
+    final List<dynamic> items = parsedResponse["items"];
+
+    items.forEach((item) {
+      setState(() {
+        userPlaylists.add({item["name"]: item["external_urls"]["spotify"]});
+      });
+    });
   }
 
   Future<String> _mix(List<String> playlists, int nsongs, String name) async {
@@ -146,88 +192,59 @@ class _MVPState extends State<MVP> {
       link = "";
     });
 
+    //treat playlists
+    playlists.removeWhere((element) => element == "");
+
     final riverResponse = await RiverApi.getSongList(playlists, nsongs);
     final songlist = jsonDecode(riverResponse.body)["songlist"];
-
-    final String clientId = widget.cid;
-
-    const String redirectUri = 'river://spotify-auth-callback';
-
-    String spotifyAuthUrl =
-        'https://accounts.spotify.com/authorize?response_type=code&client_id=$clientId&scope=playlist-modify-private&redirect_uri=$redirectUri';
+    final userID = await widget.storage!.read(key: "userID");
+    final accessToken = await widget.storage!.read(key: "spAccessToken");
 
     try {
-      final result = await FlutterWebAuth.authenticate(
-        url: spotifyAuthUrl,
-        callbackUrlScheme: 'river',
+      const String playlistEndpoint =
+          'https://api.spotify.com/v1/users/{user_id}/playlists';
+
+      final postPlaylistResponse = await http.post(
+        Uri.parse(playlistEndpoint.replaceFirst(
+            '{user_id}', '$userID')), // Replace with the user's Spotify ID
+        headers: {
+          'Authorization': 'Bearer $accessToken',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'name': name,
+          'description': 'Playlist criada a partir do RIVER ©',
+          'public': false,
+        }),
       );
 
-      // Check for and extract the authorization code from the result.
-      final code = result.split("code=")[1];
-      debugPrint(code);
-
-      final tokens = await requestSpotifyTokens(code, redirectUri);
-      if (tokens != null) {
-        final accessToken = tokens['access_token'];
-        final refreshToken = tokens['refresh_token'];
-        await widget.storage!.write(key: "spAccesToken", value: accessToken);
-        await widget.storage!.write(key: "spRefreshToken", value: refreshToken);
-
-        const String userInfoEndpoint = 'https://api.spotify.com/v1/me';
-
-        final response = await http.get(
-          Uri.parse(userInfoEndpoint),
-          headers: {
-            'Authorization': 'Bearer $accessToken',
-          },
-        );
-        debugPrint(response.body);
-        final parsedResponse = jsonDecode(response.body);
-        final userID = parsedResponse["id"] ?? "null";
-        widget.storage!.write(key: "userID", value: userID);
-
-        debugPrint(userID+tokens.toString());
-
-        const String playlistEndpoint =
-            'https://api.spotify.com/v1/users/{user_id}/playlists';
-
-        final postPlaylistResponse = await http.post(
-          Uri.parse(playlistEndpoint.replaceFirst(
-              '{user_id}', '$userID')), // Replace with the user's Spotify ID
-          headers: {
-            'Authorization': 'Bearer $accessToken',
-            'Content-Type': 'application/json',
-          },
-          body: jsonEncode({
-            'name': name,
-            'description': 'Playlist criada a partir do RIVER ©',
-            'public': false,
-          }),
-        );
-
-        if (postPlaylistResponse.statusCode == 201) {
-          final playlistID = jsonDecode(postPlaylistResponse.body)["id"];
-          final playlistURL =
-              jsonDecode(postPlaylistResponse.body)["external_urls"]["spotify"];
-          debugPrint('Playlist created successfully.');
-          debugPrint(accessToken);
-          final addPlaylistResponse =
-              await RiverApi.addSongs(songlist, playlistID, accessToken);
-          if (addPlaylistResponse.statusCode == 200) {
-            return playlistURL;
-          }
-        } else {
-          debugPrint(
-              'Failed to create the playlist. Status code: ${postPlaylistResponse.statusCode}');
-          return "ERRO NA CRIAÇÃO DA PLAYLIST";
+      if (postPlaylistResponse.statusCode == 201) {
+        final playlistID = jsonDecode(postPlaylistResponse.body)["id"];
+        final playlistURL =
+            jsonDecode(postPlaylistResponse.body)["external_urls"]["spotify"];
+        debugPrint('Playlist created successfully.');
+        debugPrint(accessToken);
+        final addPlaylistResponse =
+            await RiverApi.addSongs(songlist, playlistID, accessToken!);
+        if (addPlaylistResponse.statusCode == 200) {
+          return playlistURL;
         }
+      } else {
+        debugPrint(
+            'Failed to create the playlist. Status code: ${postPlaylistResponse.statusCode}');
+        return "ERRO NA CRIAÇÃO DA PLAYLIST";
       }
     } catch (e) {
       debugPrint('Authentication error: $e');
       return "ERRO NA AUTENTICAÇÃO DO SPOTIFY";
     }
-
     return "ERRO";
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    userAuth();
   }
 
   @override
@@ -253,9 +270,7 @@ class _MVPState extends State<MVP> {
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 20),
                 child: ElevatedButton(
-                  onPressed: () async {
-                    
-                  },
+                  onPressed: _getPls,
                   style: const ButtonStyle(
                       backgroundColor: MaterialStatePropertyAll(
                           Color.fromARGB(96, 76, 175, 79))),
@@ -273,11 +288,26 @@ class _MVPState extends State<MVP> {
                               fontWeight: FontWeight.bold,
                               fontSize: 15),
                         ),
-                        Icon(Icons.arrow_circle_down_rounded,color: Colors.white,)
+                        Icon(
+                          Icons.arrow_circle_down_rounded,
+                          color: Colors.white,
+                        )
                       ],
                     ),
                   ),
                 ),
+              ),
+              Column(
+                children: List.generate(
+                    userPlaylists.length,
+                    (index) => TextButton(
+                        onPressed: () {
+                          setState(() {
+                            controllers[playlists-1].text = userPlaylists[index].values.first;
+                          });
+                          addInputField();
+                        },
+                        child: Text(userPlaylists[index].keys.first))),
               ),
               Column(
                   children: List.generate(
@@ -394,8 +424,8 @@ class _MVPState extends State<MVP> {
                       backgroundColor: MaterialStatePropertyAll(
                           Color.fromARGB(96, 76, 175, 79))),
                   child: Padding(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 30.0, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 30.0, vertical: 10),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -407,7 +437,10 @@ class _MVPState extends State<MVP> {
                               fontWeight: FontWeight.bold,
                               fontSize: 30),
                         ),
-                        Image.asset("assets/images/riverNoText.png",scale: 12,)
+                        Image.asset(
+                          "assets/images/riverNoText.png",
+                          scale: 12,
+                        )
                       ],
                     ),
                   ),
