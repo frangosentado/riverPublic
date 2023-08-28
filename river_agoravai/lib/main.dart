@@ -66,15 +66,18 @@ class _MVPState extends State<MVP> {
   final TextEditingController nameController = TextEditingController();
   var link = "";
   var _loading = false;
+  var _clicked = false;
   List<Map<dynamic, dynamic>> userPlaylists = [];
 
   late int playlists = 1;
 
   void addInputField() {
-    setState(() {
-      playlists += 1;
-      controllers.add(TextEditingController());
-    });
+    if (playlists < 10) {
+      setState(() {
+        playlists += 1;
+        controllers.add(TextEditingController());
+      });
+    }
   }
 
   void removeInputField() {
@@ -168,7 +171,7 @@ class _MVPState extends State<MVP> {
 
     final postPlaylistResponse = await http.get(
       Uri.parse(
-          "${playlistEndpoint.replaceFirst('{user_id}', '$userID')}?limit=5"), // Replace with the user's Spotify ID
+          "${playlistEndpoint.replaceFirst('{user_id}', '$userID')}?limit=25"), // Replace with the user's Spotify ID
       headers: {
         'Authorization': 'Bearer $accessToken',
         'Content-Type': 'application/json',
@@ -270,10 +273,17 @@ class _MVPState extends State<MVP> {
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 20),
                 child: ElevatedButton(
-                  onPressed: _getPls,
-                  style: const ButtonStyle(
-                      backgroundColor: MaterialStatePropertyAll(
-                          Color.fromARGB(96, 76, 175, 79))),
+                  onPressed: _clicked ? () {} : () {
+                    setState(() {
+                      _clicked = true;
+                    });
+                    _getPls();
+                    },
+                  style: ButtonStyle(
+                      backgroundColor: _clicked
+                          ? const MaterialStatePropertyAll(Colors.grey)
+                          : const MaterialStatePropertyAll(
+                              Color.fromARGB(96, 76, 175, 79))),
                   child: const Padding(
                     padding:
                         EdgeInsets.symmetric(horizontal: 0.0, vertical: 10),
@@ -303,7 +313,9 @@ class _MVPState extends State<MVP> {
                     (index) => TextButton(
                         onPressed: () {
                           setState(() {
-                            controllers[playlists-1].text = userPlaylists[index].values.first;
+                            controllers[playlists - 1].text =
+                                userPlaylists[index].values.first;
+                            userPlaylists.removeAt(index);
                           });
                           addInputField();
                         },
